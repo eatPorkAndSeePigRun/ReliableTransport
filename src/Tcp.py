@@ -1,3 +1,6 @@
+# coding: utf-8
+
+
 class Tcp(object):
     """ 这里是要你实现的函数 """
 

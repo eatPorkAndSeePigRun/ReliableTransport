@@ -1,3 +1,4 @@
+# coding: utf-8
 import atexit
 from functools import partial
 from struct import pack, unpack
