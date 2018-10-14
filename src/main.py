@@ -3,7 +3,6 @@ import atexit
 from functools import partial
 from struct import pack, unpack
 
-from log import *
 from Tcp import *
 from LatencySimulator import *
 
@@ -14,11 +13,11 @@ def main():
     # interval = 500
 
     args = locals().copy()
-    args.pop("mode")
-    a = Tcp(None, **args)
-    a.name = "a"
-    b = Tcp(None, **args)
-    b.name = "b"
+    #args.pop("mode")
+    a = Tcp(**args)
+    #a.name = "a"
+    b = Tcp(**args)
+    #b.name = "b"
 
     vnet = LatencySimulator(a, b, 2, 1, 30, 102400)
     a.output = partial(vnet.send, a)
@@ -38,7 +37,7 @@ def main():
 
         # 片段 A1
         while current >= slap:
-            packet = "abchina"
+            packet = "abchina"*1024
             slap += 1
             assert (a.send(packet) == 0)
 
@@ -67,7 +66,7 @@ def main():
             hr, err = b.recv(2048)
             if err < 0:
                 break
-            sn, ts = unpack("!II", hr)
+            #sn, ts = unpack("!II", hr)
             # print "b send %s", sn, ts, current
             assert (b.send(hr) == 0)
 
