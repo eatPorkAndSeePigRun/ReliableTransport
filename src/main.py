@@ -24,7 +24,7 @@ def main():
     b.output = partial(vnet.send, b)
 
     current = clock()
-    slap = current + 20
+    slap = current + 0
 
     while True:
 
@@ -38,7 +38,7 @@ def main():
         # 片段 A1
         while current >= slap:
             packet = "abchina"*1024
-            slap += 1
+            slap += 1000
             assert (a.send(packet) == 0)
 
         # 片段 A2
@@ -68,8 +68,7 @@ def main():
                 break
             #sn, ts = unpack("!II", hr)
             # print "b send %s", sn, ts, current
-            assert (b.send(hr) == 0)
-
+            #assert (b.send(hr) == 0)
 
 atexit.register(save_log)
 main()
