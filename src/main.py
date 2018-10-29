@@ -38,7 +38,7 @@ def main():
         # 片段 A1
         while current >= slap:
             packet = "abchina"*1024
-            slap += 1000
+            slap += 100000
             assert (a.send(packet) == 0)
 
         # 片段 A2

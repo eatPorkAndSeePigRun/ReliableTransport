@@ -1,30 +1,40 @@
 # coding: utf-8
 import json
 import time
+import logging
+
+filename = str(int(time.time())) + ".log"
+myfile_handler = logging.FileHandler(filename)
+fmt = logging.Formatter("%(asctime)s, %(filename)s[line:%(lineno)d]: %(message)s")
+myfile_handler.setFormatter(fmt)
+
+mylog = logging.getLogger()
+mylog.setLevel(logging.INFO)
+mylog.addHandler(myfile_handler)
 
 
-# window_max_size = 10240
+window_max_size = 10240
 
 class Tcp(object):
-    """ 这里是要你实现的函数 """
 
     def __init__(self, **kw):
         self.output = None
         # 发送方
-        self.mss = 500              # 通常设为1460
+        self.mss = 100              # 通常设为1460
         self.snd_buffer = ""
         self.sndpkt_buffer = []     # 缓存已发送未被确认的pkt
         self.max_unconfirmed_pkt_num = 500 
 
         self.start_timer = 0.0      # 定时器 
-        self.duplicate_ack_num = 0
         self.estimated_rtt = 0
         self.dev_rtt = 0
         self.timeout_interval = 1
 
         self.last_byte_sent = 0     # 拥塞控制
         self.last_byte_acked = 0
-        self.cwnd = 0
+        self.ssthresh = 0xffff      # 或64KB
+        self.cwnd = self.mss
+        self.duplicate_ack_count = 0
 
         # 接收方
         self.rcvpkt_buffer = []     # 缓存已正常接收的pkt
@@ -32,111 +42,102 @@ class Tcp(object):
 
         self.last_byte_read = 0     # 流量控制
         self.last_byte_rcvd = 0
-        self.rwnd = 0
-
-        self.seq = 0
-        self.ack = 0
+        self.rwnd = 0xffff          # 随时间变化，rwnd = rcv_buffer - (last_byte_rcvd - last_byte_read)
 
     def update(self, timestamp):
-        """ 这个函数可以看做 操作系统稳定每隔一小段时间调用一次
-        可能有一些定时任务 定时器可以放在这里实现
-        """
+        # 发送方
         if timestamp - self.start_timer > self.timeout_interval:
             if not self.sndpkt_buffer:
                 return
-            sndpkt = self.sndpkt_buffer[0]
-            self.output(json.dumps(sndpkt))
-            self.start_timer = time.time()
-            self.timeout_interval *= 2
+            # 拥塞控制
+            if self.cwnd is not 1 * self.mss:
+                self.ssthresh = self.cwnd / 2
+            self.cwnd = 1 * self.mss
+            self.duplicate_ack_count = 0
+            # 重新发送
+            mylog.info("----------------timeout----------------")
+            self.retransmit_missing_segment() 
+            mylog.info("---------------------------------------")
 
     def send(self, binary):
-        """ 应用程序要发 一段二进制数据出去
-        要求实现这个函数的语义 跟socket.send()一样
-        这个函数不能block
-        """
         self.snd_buffer += binary
-        self.start_timer = time.time()
-        while self.snd_buffer != "" and len(self.sndpkt_buffer) <= self.max_unconfirmed_pkt_num:
-            data = self.snd_buffer[0: self.mss]
-            sndpkt = {"seq": self.seq, "data": data}
-            self.output(json.dumps(sndpkt))
-            self.sndpkt_buffer.append(sndpkt)
-            self.snd_buffer = self.snd_buffer[self.mss: ]
-            self.seq = self.seq + len(data)
+        # 发送方
+        self.rdt_send()
         return 0
 
     def recv(self, n):
-        """ 应用程序要收 n个字节的数据
-        要求实现这个函数的语义 跟socket.recv()一样
-        这个函数不能block
-
-        没有数据可以拿的时候 要求返回 err == -1
-        """
-        binary = self.rcv_buffer[: n]
-        self.rcv_buffer = self.rcv_buffer[n: ]
-        err = 0
-        if binary == "":
-            err = -1
-        return binary, err
+        if self.rcv_buffer:
+            binary = self.rcv_buffer[: n]
+            self.rcv_buffer = self.rcv_buffer[n: ]
+            return binary, 0
+        else:
+            return "", -1
 
     def input(self, binary):
-        """
-        网卡收到数据包 转给给Tcp栈处理 重排乱序包的顺序之类
-        """
-        assert(binary != "")
+        if not binary:
+            return
         rcvpkt = json.loads(binary)
-        # if bit_error:
-        #   return 
-        if rcvpkt.has_key("seq"):   # 接收方
-            print "seq: ", rcvpkt["seq"]
-            # 乱序处理
-            len_rcvpkt_buffer = len(self.rcvpkt_buffer)
-            if len_rcvpkt_buffer is 0:
-                self.rcvpkt_buffer.append(rcvpkt)
-                if self.ack <= (rcvpkt["seq"] + len(rcvpkt["data"])):
-                    self.ack = rcvpkt["seq"] + len(rcvpkt["data"])
-            else:
-                i = len_rcvpkt_buffer
-                while i > 0:
-                    if rcvpkt["seq"] > self.rcvpkt_buffer[i - 1]["seq"]:
-                        self.rcvpkt_buffer.insert(i, rcvpkt)
-                        self.ack = rcvpkt["seq"] + len(rcvpkt["data"])
-                        break
-                    elif rcvpkt["seq"] == self.rcvpkt_buffer[i - 1]["seq"]:
-                        break
-                    else:
-                        i = i - 1
-                if i is 0 and rcvpkt["seq"] < self.rcvpkt_buffer[0]["seq"]:
-                    self.rcvpkt_buffer.insert(0, rcvpkt)
-                    self.ack = recvpkt["seq"] + len(rcvpkt["data"])
-            # 给发送方发送ack
-            sndpkt = {"ack": self.ack}
+
+        if rcvpkt.has_key("ack"):   # 发送方
+            if rcvpkt["ack"] > self.last_byte_acked:    # new ack
+                if self.cwnd < self.ssthresh:           # 慢启动
+                    self.cwnd *= 2
+                else:                                   # 拥塞避免
+                    self.cwnd = self.cwnd + self.mss * (self.mss / self.cwnd)
+
+                self.duplicate_ack_count = 0
+                self.last_byte_acked = rcvpkt["ack"]
+                while self.sndpkt_buffer and rcvpkt["ack"] > self.sndpkt_buffer[0]["seq"]:
+                    self.sndpkt_buffer.pop(0)   
+                self.update_timeout_interval()
+                # 继续发送
+                self.rdt_send()
+            else:                                       # duplicate ack
+                self.duplicate_ack_count += 1
+                if self.duplicate_ack_count is 3:
+                    self.ssthresh = self.cwnd / 2
+                    self.cwnd = self.ssthresh + 3 * self.mss
+                    mylog.info("--------duplicate_ack-------------")
+                    self.retransmit_missing_segment()
+                    mylog.info("----------------------------------")
+             
+        elif rcvpkt.has_key("seq"): # 接收方
+            if rcvpkt["seq"] == self.last_byte_rcvd:
+                self.rcv_buffer += str(rcvpkt["data"])
+                # 发送ack
+                self.last_byte_rcvd += len(rcvpkt["data"])
+            self.rwnd = window_max_size - len(self.rcv_buffer)
+            sndpkt = {"ack": self.last_byte_rcvd, "rwnd": self.rwnd}
             self.output(json.dumps(sndpkt))
-            # 拆数据包 
-            while self.rcvpkt_buffer and self.ack > self.rcvpkt_buffer[0]["seq"]:
-                self.rcv_buffer = self.rcv_buffer + self.rcvpkt_buffer.pop(0)["data"]
-        elif rcvpkt.has_key("ack"): # 发送方
-            print "ack: ", rcvpkt["ack"]
-            if self.sndpkt_buffer == []:
-                return 
-            if rcvpkt["ack"] > self.sndpkt_buffer[0]["seq"]:
-                while len(self.sndpkt_buffer) is not 0 and rcvpkt["ack"] > self.sndpkt_buffer[0]["seq"]:
-                    self.sndpkt_buffer.pop(0)
-                self.duplicate_ack_num = 0
-                # 重新计算self.timeout_interval
-                sample_rtt = time.time() - self.start_timer
-                alpha = 0.125
-                self.estimated_rtt = (1 - alpha) * self.estimated_rtt + alpha * sample_rtt
-                beta = 0.25
-                self.dev_rtt = (1 - beta) * self.dev_rtt + beta * abs(sample_rtt - self.estimated_rtt)
-                self.timeout_interval = self.estimated_rtt + 4 * self.dev_rtt
-            else:
-                self.duplicate_ack_num = self.duplicate_ack_num + 1
-                if self.duplicate_ack_num == 3:
-                    if not self.sndpkt_buffer:
-                        return
-                    sndpkt = self.sndpkt_buffer[0]
-                    self.output(json.dumps(sndpkt))
-        else:
-            assert(False)
-        
+            mylog.info("ack: " + str(sndpkt["ack"]))
+
+    def rdt_send(self):
+        N = min(self.rwnd, self.cwnd)
+        while self.last_byte_sent < self.last_byte_acked + N:
+            if not self.snd_buffer:
+                return
+            data = self.snd_buffer[0: self.mss]
+            sndpkt = {"seq": self.last_byte_sent, "data": data}
+            self.output(json.dumps(sndpkt))
+            mylog.info("seq: " + str(sndpkt["seq"]))
+            if self.last_byte_sent == self.last_byte_acked:
+                self.start_timer = time.time()
+            self.sndpkt_buffer.append(sndpkt)
+            self.snd_buffer = self.snd_buffer[self.mss: ]
+            self.last_byte_sent += len(data)
+
+    def update_timeout_interval(self):
+        # 重新计算self.timeout_interval
+        sample_rtt = time.time() - self.start_timer
+        alpha = 0.125
+        self.estimated_rtt = (1 - alpha) * self.estimated_rtt + alpha * sample_rtt
+        beta = 0.25
+        self.dev_rtt = (1 - beta) * self.dev_rtt + beta * abs(sample_rtt - self.estimated_rtt)
+        self.timeout_interval = self.estimated_rtt + 4 * self.dev_rtt
+
+    def retransmit_missing_segment(self):
+        self.start_timer = time.time()
+        self.timeout_interval *= 2
+        for sndpkt in self.sndpkt_buffer:
+            self.output(json.dumps(sndpkt))
+            mylog.info("seq: " + str(sndpkt["seq"]))
