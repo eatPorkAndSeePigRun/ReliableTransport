@@ -50,7 +50,7 @@ class Tcp(object):
             if not self.sndpkt_buffer:
                 return
             # 拥塞控制
-            if self.cwnd is not 1 * self.mss:
+            if self.cwnd != 1 * self.mss:
                 self.ssthresh = self.cwnd / 2
             self.cwnd = 1 * self.mss
             self.duplicate_ack_count = 0
@@ -94,7 +94,7 @@ class Tcp(object):
                 self.rdt_send()
             else:                                       # duplicate ack
                 self.duplicate_ack_count += 1
-                if self.duplicate_ack_count is 3:
+                if self.duplicate_ack_count == 3:
                     self.ssthresh = self.cwnd / 2
                     self.cwnd = self.ssthresh + 3 * self.mss
                     mylog.info("--------duplicate_ack-------------")
